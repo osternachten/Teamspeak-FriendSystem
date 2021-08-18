@@ -1,4 +1,4 @@
-﻿/*
+/*
  * TeamSpeak 3 demo plugin
  *
  * Copyright (c) 2008-2017 TeamSpeak Systems GmbH
@@ -292,7 +292,8 @@ static struct PluginMenuItem* createMenuItem(enum PluginMenuType type, int id, c
 #define END_CREATE_MENUS (*menuItems)[n++] = NULL; assert(n == sz);
 
 enum {
-	MENU_ID_CLIENT_1 = 1,
+	REMOVE_CHANNELBANN = 1,
+	CHANNELBANN_KICK
 };
 
 /*
@@ -319,8 +320,9 @@ void ts3plugin_initMenus(struct PluginMenuItem*** menuItems, char** menuIcon) {
 	 * e.g. for "test_plugin.dll", icon "1.png" is loaded from <TeamSpeak 3 Client install dir>\plugins\test_plugin\1.png
 	 */
 
-	BEGIN_CREATE_MENUS(9);  /* IMPORTANT: Number of menu items must be correct! */
-	CREATE_MENU_ITEM(PLUGIN_MENU_TYPE_CLIENT, MENU_ID_CLIENT_1, "Channel Erstellen", "");
+	BEGIN_CREATE_MENUS(2);  /* IMPORTANT: Number of menu items must be correct! */
+	CREATE_MENU_ITEM(PLUGIN_MENU_TYPE_CLIENT, REMOVE_CHANNELBANN, "Remove Channelban", "");
+	CREATE_MENU_ITEM(PLUGIN_MENU_TYPE_GLOBAL, CHANNELBANN_KICK, "Channelban Kick On/Off", "");
 	END_CREATE_MENUS;  /* Includes an assert checking if the number of menu items matched */
 
 	/*
@@ -373,6 +375,8 @@ void ts3plugin_initHotkeys(struct PluginHotkey*** hotkeys) {
 
 	/* The client will call ts3plugin_freeMemory to release all allocated memory */
 }
+
+bool rubberband_channelban_kick = true;
 
 int getTalkpowerFromMyChannel(uint64 serverConnectionHandlerID)
 {
@@ -511,6 +515,16 @@ int callback(void* NotUsed, int numerOfResults, char** rowValue, char** colName)
 	return 0;
 }
 
+anyID my_anyid;
+void setgroupfromuser(uint64 serverConnectionHandlerID, anyID selectedItemID, int group)
+{
+	ts3Functions.getClientID(serverConnectionHandlerID, &my_anyid);
+	uint64 mychannel;
+	ts3Functions.getChannelOfClient(serverConnectionHandlerID, my_anyid, &mychannel);
+	setchannelgroup(serverConnectionHandlerID, selectedItemID, mychannel, group);
+	if (group == 12)
+		ts3Functions.requestClientKickFromChannel(serverConnectionHandlerID, selectedItemID, "Bye", NULL);
+}
 
 void ts3plugin_onConnectStatusChangeEvent(uint64 serverConnectionHandlerID, int newStatus, unsigned int errorNumber) {
 }
@@ -836,6 +850,24 @@ void ts3plugin_onChannelClientPermListFinishedEvent(uint64 serverConnectionHandl
 }
 
 void ts3plugin_onClientChannelGroupChangedEvent(uint64 serverConnectionHandlerID, uint64 channelGroupID, uint64 channelID, anyID clientID, anyID invokerClientID, const char* invokerName, const char* invokerUniqueIdentity) {
+	anyID myid;
+	ts3Functions.getClientID(serverConnectionHandlerID, &myid);
+	uint64 mychannel;
+	ts3Functions.getChannelOfClient(serverConnectionHandlerID, myid, &mychannel);
+	uint64 mychannelgroup;
+	ts3Functions.getClientVariableAsUInt64(serverConnectionHandlerID, myid, CLIENT_CHANNEL_GROUP_ID, &mychannelgroup);
+	char* channelname;
+	ts3Functions.getChannelVariableAsString(serverConnectionHandlerID, mychannel, CHANNEL_NAME, &channelname);
+	if (mychannel == channelID) {
+		if (myid != clientID) {
+			if (!rubberband_channelban_kick)return;
+			if (channelGroupID == 12) {
+				if ((mychannelgroup == 10) || (mychannelgroup == 11)) {
+					ts3Functions.requestClientKickFromChannel(serverConnectionHandlerID, clientID, "Bye", 0);
+				}
+			}
+		}
+	}
 }
 
 int ts3plugin_onServerPermissionErrorEvent(uint64 serverConnectionHandlerID, const char* errorMessage, unsigned int error, const char* returnCode, unsigned int failedPermissionID) {
@@ -945,11 +977,18 @@ void ts3plugin_onAvatarUpdated(uint64 serverConnectionHandlerID, anyID clientID,
  * - selectedItemID: Channel or Client ID in the case of PLUGIN_MENU_TYPE_CHANNEL and PLUGIN_MENU_TYPE_CLIENT. 0 for PLUGIN_MENU_TYPE_GLOBAL.
  */
 void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenuType type, int menuItemID, uint64 selectedItemID) {
+	std::string str;
 	printf("PLUGIN: onMenuItemEvent: serverConnectionHandlerID=%llu, type=%d, menuItemID=%d, selectedItemID=%llu\n", (long long unsigned int)serverConnectionHandlerID, type, menuItemID, (long long unsigned int)selectedItemID);
 	switch(type) {
 		case PLUGIN_MENU_TYPE_GLOBAL:
 			/* Global menu item was triggered. selectedItemID is unused and set to zero. */
 			switch(menuItemID) {
+			case CHANNELBANN_KICK:
+				rubberband_channelban_kick = !rubberband_channelban_kick;
+				str.append("Channelbann Kick wurde ");
+				str.append(rubberband_channelban_kick ? "aktiviert." : "deaktiviert.");
+				ts3Functions.printMessageToCurrentTab(str.c_str());
+				break;
 			default:
 			break;
 			}
@@ -964,6 +1003,10 @@ void ts3plugin_onMenuItemEvent(uint64 serverConnectionHandlerID, enum PluginMenu
 		case PLUGIN_MENU_TYPE_CLIENT:
 			/* Client contextmenu item was triggered. selectedItemID is the clientID of the selected client */
 			switch(menuItemID) {
+			case REMOVE_CHANNELBANN:
+				//Channelbann wegnehmen
+				setgroupfromuser(serverConnectionHandlerID, selectedItemID, 9);
+				break;
 			default:
 			break;
 			}
